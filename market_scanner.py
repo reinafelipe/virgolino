@@ -67,36 +67,34 @@ class MarketScanner:
                 for event in events:
                     title = event.get('title', '').lower()
                     end_date_str = event.get('endDate')
-                    logger.info(f"DEBUG: Inspecting '{title}' Ends: {end_date_str}")
                     
-                    # Check if title matches any keyword for this asset
-                    
-                    # Check if title matches any keyword for this asset
-                    if not any(kw in title for kw in keywords):
+                    # 1. STRICT ASSET FILTER (Must be BTC or ETH "Up or Down")
+                    asset_marker = "bitcoin up or down" if asset == 'BTC' else "ethereum up or down"
+                    if asset_marker not in title:
                         continue
                     
-                    # Must be "up or down" market
-                    if 'up' not in title or 'down' not in title:
+                    # 2. STRICT DATE FILTER (Must include current date, e.g., "February 3")
+                    current_day_str = now.strftime("%B %d").lower() # e.g. "february 03"
+                    # Remove leading zero for months/days if necessary to match Polymarket style
+                    style_date = current_day_str.replace(" 0", " ") 
+                    if style_date not in title:
                         continue
                     
-                    end_date_str = event.get('endDate')
-                    if not end_date_str: continue
+                    # 3. STRICT 15-MIN INTERVAL FILTER (Minutes 2-12 logic is in bot.py)
+                    import re
+                    time_pattern = r'\d{1,2}:\d{2}(?:[apm]{2})?-\d{1,2}:\d{2}(?:[apm]{2})?'
+                    time_match = re.search(time_pattern, title, re.IGNORECASE)
+                    
+                    if not time_match:
+                        continue
+                    
+                    logger.info(f"MATCHED: '{title}' Ends: {end_date_str}")
                     
                     try:
                         clean_date = end_date_str.replace("Z", "")
                         if "." in clean_date: clean_date = clean_date.split(".")[0]
                         end_date = datetime.strptime(clean_date, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
                         
-                        # STRICT 15-MIN FILTERING
-                        # Regex to match patterns like "1:45PM-2:00PM" or "14:45-15:00"
-                        import re
-                        time_pattern = r'\d{1,2}:\d{2}(?:[APM]{2})?-\d{1,2}:\d{2}(?:[APM]{2})?'
-                        time_match = re.search(time_pattern, title)
-                        
-                        if not time_match:
-                            logger.debug(f"Skipping '{title}' - No 15-min time interval found")
-                            continue
-                            
                         if target_window_start <= end_date <= target_window_end:
                             for m in event.get('markets', []):
                                 clob_token_ids = m.get('clobTokenIds', [])
@@ -127,9 +125,11 @@ class MarketScanner:
                                     'event_id': event.get('id'),
                                     'slug': event.get('slug'),
                                     'clob_token_ids': clob_token_ids,
-                                    'outcomes': outcomes
+                                    'outcomes': outcomes,
+                                    'condition_id': m.get('conditionId')
                                 }
                                 markets_found.append(market_data)
+
                                 
                                 if quick_scan and markets_found:
                                     return markets_found

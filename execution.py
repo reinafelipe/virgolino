@@ -166,3 +166,50 @@ class ExecutionEngine:
             logger.info("Cancelled all orders")
         except Exception as e:
             logger.error(f"Failed to cancel orders: {e}")
+
+    def redeem_winning_position(self, token_id: str) -> dict:
+        """
+        Redeem a winning position by selling at 0.99 price.
+        Polymarket doesn't have a direct redeem API, so we sell winning tokens
+        at near-$1 price to effectively cash out.
+        """
+        try:
+            balance = self.get_token_balance(token_id)
+            if balance <= 0:
+                logger.info(f"No balance to redeem for token {token_id[:15]}...")
+                return {"success": True, "message": "No balance"}
+            
+            logger.info(f"🎰 REDEEMING {balance:.4f} winning shares for token {token_id[:15]}...")
+            
+            # Sell at 0.99 to cash out winning position
+            # Winning tokens are worth $1, so selling at 0.99 nets us ~99% of value
+            result = self.place_order(
+                token_id=token_id,
+                side='SELL',
+                price=0.99,
+                size=balance
+            )
+            
+            if result and result.get('success'):
+                payout = balance * 0.99
+                logger.info(f"✅ REDEEMED: {balance:.4f} shares → ${payout:.2f} USDC")
+                return {"success": True, "payout": payout, "shares": balance}
+            else:
+                logger.warning(f"Redeem order failed: {result}")
+                return {"success": False, "error": str(result)}
+                
+        except Exception as e:
+            logger.error(f"Redeem error for {token_id[:15]}...: {e}")
+            return {"success": False, "error": str(e)}
+
+    def check_and_redeem_all(self, token_ids: list) -> float:
+        """
+        Check multiple token IDs and redeem any with positive balance.
+        Returns total USDC recovered.
+        """
+        total_redeemed = 0.0
+        for token_id in token_ids:
+            result = self.redeem_winning_position(token_id)
+            if result.get('success') and result.get('payout'):
+                total_redeemed += result['payout']
+        return total_redeemed

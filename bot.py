@@ -144,9 +144,13 @@ def main():
     logger.info("=" * 60)
     logger.info(f"Assets: {list(config.ASSETS.keys())}")
     logger.info(f"Capital: ${config.INITIAL_CAPITAL:.2f}")
-    logger.info(f"Dynamic Stake: ${config.MIN_STAKE:.0f}-${config.MAX_STAKE:.0f} (portfolio/{config.STAKE_DIVISOR})")
+    position_pct = getattr(config, 'POSITION_SIZE_PCT', 0.05) * 100
+    max_exposure_pct = getattr(config, 'MAX_TOTAL_EXPOSURE_PCT', 0.10) * 100
+    logger.info(f"Position Size: {position_pct:.0f}% per trade (${config.INITIAL_CAPITAL * position_pct/100:.2f})")
+    logger.info(f"Max Exposure: {max_exposure_pct:.0f}% total (2 positions)")
     logger.info(f"Entry Window: Minutes {config.ENTRY_WINDOW_START_MIN}-{config.ENTRY_WINDOW_END_MIN}")
     logger.info("=" * 60)
+
     
     # Initialize components
     try:
@@ -178,21 +182,21 @@ def main():
                 current_bal = engine.get_balance()
                 risk_manager.cleanup_expired_positions(current_bal)
                 
-                # Check for Take Profit
-                tp_positions = risk_manager.get_take_profit_signals(engine)
-                for pos in tp_positions:
-                    logger.info(f"[{pos['asset']}] EXECUTING TAKE PROFIT SELL")
-                    sell_resp = engine.place_order(
-                        token_id=pos['token_id'],
-                        side='SELL',
-                        price=0.01,  # Market-like sell (match highest bid)
-                        size=pos['size']
-                    )
-                    if sell_resp and sell_resp.get('success'):
-                        logger.info(f"[{pos['asset']}] TP SELL SUCCESSFUL")
-                        # Pos will be cleaned up in next cycle's cleanup since it's finished
-                    else:
-                        logger.error(f"[{pos['asset']}] TP SELL FAILED: {sell_resp}")
+                # Monitor all positions for TP and Technical SL
+                if risk_manager.active_positions:
+                    exit_signals = risk_manager.monitor_all_positions(engine)
+                    
+                    for pos in exit_signals:
+                        reason = pos.get('exit_reason', 'UNKNOWN')
+                        logger.info(f"[{pos['asset']}] EXIT SIGNAL: {reason}")
+                        
+                        result = risk_manager.execute_exit(engine, pos)
+                        if result.get('success'):
+                            pnl = result.get('pnl', 0)
+                            logger.info(f"[{pos['asset']}] EXIT COMPLETE | P&L: ${pnl:+.2f}")
+                        else:
+                            logger.error(f"[{pos['asset']}] EXIT FAILED: {result.get('error')}")
+
             else:
                 risk_manager.cleanup_expired_positions()
         except Exception as e:
@@ -315,6 +319,14 @@ def main():
                         order_id = resp.get('orderID', 'unknown')
                         logger.info(f"[{asset}] ORDER PLACED: {order_id}")
                         
+                        # Get current spot price for reference
+                        current_spot = history['close'].iloc[-1] if not history.empty else 0
+                        
+                        # For DOWN bets, resistance is the key level (price going above invalidates)
+                        # For UP bets, support is the key level (price going below invalidates)
+                        support_level = result['support'] if signal == 'UP' else None
+                        resistance_level = result['resistance'] if signal == 'DOWN' else None
+                        
                         risk_manager.record_position(
                             asset=asset,
                             side=signal,
@@ -322,8 +334,22 @@ def main():
                             token_id=token_id,
                             order_id=order_id,
                             entry_price=best_ask,
-                            expiry=target_market.get('end_date').timestamp() if target_market.get('end_date') else None
+                            expiry=target_market.get('end_date').timestamp() if target_market.get('end_date') else None,
+                            condition_id=target_market.get('condition_id'),
+                            support_level=support_level,
+                            resistance_level=resistance_level,
+                            shares=size_shares,
+                            binance_symbol=asset_config['binance_symbol'],
+                            spot_price_at_entry=current_spot
                         )
+                        
+                        # Log the key level for monitoring
+                        if signal == 'DOWN':
+                            logger.info(f"[{asset}] TECH SL SET: Exit if price > ${resistance_level:.0f}")
+                        else:
+                            logger.info(f"[{asset}] TECH SL SET: Exit if price < ${support_level:.0f}")
+
+
                     else:
                         logger.error(f"[{asset}] Order failed: {resp}")
                         
@@ -332,10 +358,17 @@ def main():
             else:
                 logger.warning("Execution engine unavailable")
         
-        # Sleep between cycles
+        # Sleep between cycles - shorter when monitoring active positions
         if running:
-            logger.info("Sleeping 60s...")
-            time.sleep(60)
+            if risk_manager.active_positions:
+                # Active positions: check every 15 seconds for faster TP/SL reaction
+                logger.info(f"Monitoring {len(risk_manager.active_positions)} position(s)... [15s cycle]")
+                time.sleep(15)
+            else:
+                # No positions: normal 60 second cycle
+                logger.info("Sleeping 60s...")
+                time.sleep(60)
+
     
     logger.info("Bot stopped.")
 

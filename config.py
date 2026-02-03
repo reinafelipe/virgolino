@@ -47,12 +47,11 @@ MAX_POSITIONS = 2  # One per asset
 STOP_LOSS_PCT = 0.20  # Stop trading if down 20%
 TAKE_PROFIT_PCT = 0.30  # Exit at 30% profit on position
 
-# DYNAMIC STAKE SIZING
-# Formula: floor(portfolio / STAKE_DIVISOR), bounded by min/max
-STAKE_DIVISOR = 20  # $100 portfolio = $5 stake
-MIN_STAKE = 5.0
-MAX_STAKE = 50.0
-MAX_PORTFOLIO_EXPOSURE = 100.0  # Per-position calculated dynamically
+# POSITION SIZING (Percentage-Based)
+POSITION_SIZE_PCT = 0.05  # 5% of cash per position
+MAX_TOTAL_EXPOSURE_PCT = 0.10  # Max 10% total exposure (2 positions * 5%)
+MIN_STAKE = 1.0  # Minimum $1 to avoid dust trades
+
 
 # Time Management
 ENTRY_WINDOW_START_MIN = 2  # Start trading at minute 2 of cycle
